@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<title>Ant Colony 3D — Web Prototype</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html,body{height:100%;margin:0;overflow:hidden;background:#111;color:#eee;font-family:Arial,Helvetica,sans-serif}
+  #canvas{width:100%;height:100%;display:block}
+  #ui{position:absolute;left:8px;top:8px;z-index:5;background:rgba(0,0,0,0.35);padding:8px;border-radius:6px}
+  button{padding:6px 8px;border-radius:6px;border:0;background:#2a2;color:#012;cursor:pointer}
+  #log{position:absolute;left:8px;bottom:8px;z-index:5;max-width:420px;max-height:200px;overflow:auto;background:rgba(0,0,0,0.35);padding:8px;border-radius:6px;font-size:12px}
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="ui">
+  <div style="font-weight:700;margin-bottom:6px">Ant Colony 3D — Prototype</div>
+  <div id="stats">Loading...</div>
+  <div style="margin-top:6px">
+    <button id="btnStart">Start / Reset</button>
+    <button id="btnWave">Spawn Wave</button>
+  </div>
+  <div style="font-size:12px;margin-top:6px">Controls: WASD = move, mouse = camera, E = interact</div>
+</div>
+<div id="log"></div>
+
+<!-- Three.js + OrbitControls from jsDelivr (reliable CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+(() => {
+  // quick logger
+  const logDiv = document.getElementById('log');
+  function log(t){ const d=document.createElement('div'); d.textContent=t; logDiv.prepend(d); if(logDiv.childElementCount>200) logDiv.removeChild(logDiv.lastChild); }
+
+  // renderer + scene + camera
+  const canvas = document.getElementById('canvas');
+  const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+  renderer.setPixelRatio(window.devicePixelRatio); renderer.setSize(window.innerWidth, window.innerHeight);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x223341);
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+  camera.position.set(0,18,24);
+
+  // controls
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.set(0,0,0); controls.enableDamping = true; controls.dampingFactor = 0.08;
+
+  // lights
+  const dir = new THREE.DirectionalLight(0xffffff, 1.0); dir.position.set(5,10,2); scene.add(dir);
+  scene.add(new THREE.AmbientLight(0x666b6f, 0.6));
+
+  // ground
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(120,120),
+    new THREE.MeshStandardMaterial({color:0x2a3b2f, roughness:1})
+  );
+  ground.rotation.x = -Math.PI/2; scene.add(ground);
+
+  // small grid
+  const grid = new THREE.GridHelper(120, 60, 0x334433, 0x334433); grid.material.opacity = 0.25; grid.material.transparent = true; scene.add(grid);
+
+  // materials
+  const mPlayer = new THREE.MeshStandardMaterial({color:0xffcc66});
+  const mBot = new THREE.MeshStandardMaterial({color:0xff9966});
+  const mEnemy = new THREE.MeshStandardMaterial({color:0x993333});
+  const mRes = new THREE.MeshStandardMaterial({color:0x66ff99});
+  const mNest = new THREE.MeshStandardMaterial({color:0x444444});
+
+  // state containers
+  const state = { player:null, bots:[], enemies:[], resources:[], nest:null, food:50, level:1, running:false, timeToWave:25 };
+
+  // helper random
+  const rnd = (a,b)=> Math.random()*(b-a)+a;
+
+  // creators
+  function makeNest(){
+    const g = new THREE.CylinderGeometry(2,3,1,16);
+    const mesh = new THREE.Mesh(g, mNest);
+    mesh.position.set(0,0.5,0);
+    mesh.userData = {stored:0,health:250};
+    scene.add(mesh); state.nest = mesh; log('Nest created');
+  }
+
+  function makePlayer(){
+    const geo = new THREE.SphereGeometry(0.45,10,10);
+    const p = new THREE.Mesh(geo, mPlayer);
+    p.position.set(0,0.45,2.5);
+    p.userData = {isPlayer:true, carry:0, carryLimit:5, speed:6, health:8};
+    scene.add(p); state.player = p;
+  }
+
+  function makeBot(pos){
+    const geo = new THREE.SphereGeometry(0.4,10,10);
+    const b = new THREE.Mesh(geo, mBot);
+    b.position.copy(pos || new THREE.Vector3(rnd(-4,4),0.4,rnd(-4,4)));
+    b.userData = {role:'forager', target:null, carry:0, carryLimit:3, speed:3.2};
+    scene.add(b); state.bots.push(b);
+  }
+
+  function makeResource(pos,amount){
+    const geo = new THREE.SphereGeometry(0.6,10,10);
+    const r = new THREE.Mesh(geo, mRes);
+    r.position.copy(pos || new THREE.Vector3(rnd(-40,40),0.6,rnd(-40,40)));
+    r.userData = {amount: amount || Math.floor(rnd(6,18))};
+    scene.add(r); state.resources.push(r);
+  }
+
+  function makeEnemy(pos){
+    const geo = new THREE.SphereGeometry(0.6,10,10);
+    const e = new THREE.Mesh(geo, mEnemy);
+    e.position.copy(pos || new THREE.Vector3(rnd(-40,40),0.6,rnd(-40,40)));
+    e.userData = {health: 8 + Math.floor(state.level*2), speed:2.2 + state.level*0.05};
+    scene.add(e); state.enemies.push(e);
+  }
+
+  // movement util
+  function moveTowards(obj, target, speed, dt){
+    const dir = new THREE.Vector3().subVectors(target, obj.position); dir.y = 0;
+    const d = dir.length(); if(d < 0.01) return;
+    dir.normalize();
+    const mv = dir.multiplyScalar(speed*dt);
+    if(mv.length() > d) obj.position.copy(target); else obj.position.add(mv);
+  }
+
+  // basic AI tick
+  let last = performance.now()/1000;
+  function step(){
+    const now = performance.now()/1000; const dt = Math.min(0.05, now-last); last = now;
+    if(state.running){
+      // resource spawn small
+      if(state.resources.length < 30 && Math.random() < 0.01) makeResource(new THREE.Vector3(rnd(-30,30),0.6,rnd(-30,30)));
+
+      // bots
+      for(const b of state.bots.slice()){
+        const ud = b.userData;
+        if(ud.target && ud.target.userData && ud.target.userData.amount > 0){
+          moveTowards(b, ud.target.position, ud.speed, dt);
+          if(b.position.distanceTo(ud.target.position) < 1.2){
+            ud.carry++; ud.target.userData.amount--;
+            if(ud.carry >= ud.carryLimit) ud.target = state.nest;
+            if(ud.target.userData.amount <= 0){
+              scene.remove(ud.target);
+              const i = state.resources.indexOf(ud.target); if(i>=0) state.resources.splice(i,1);
+              ud.target = null;
+            }
+          }
+        } else if(ud.target === state.nest){
+          moveTowards(b, state.nest.position, ud.speed, dt);
+          if(b.position.distanceTo(state.nest.position) < 2.0){
+            state.nest.userData.stored += ud.carry; state.food += ud.carry; ud.carry = 0; ud.target = null;
+          }
+        } else {
+          // find nearest resource
+          let best=null,bd=1e9;
+          for(const r of state.resources){ if(r.userData.amount<=0) continue; const d = b.position.distanceTo(r.position); if(d<bd){bd=d;best=r;} }
+          if(best) ud.target = best; else ud.target = {position: state.nest.position.clone().add(new THREE.Vector3(rnd(-6,6),0,rnd(-6,6)))};
+        }
+      }
+
+      // enemies: move to nearest ant or nest
+      for(const e of state.enemies.slice()){
+        let best = state.nest; let bd = e.position.distanceTo(state.nest.position);
+        if(state.player) { const d = e.position.distanceTo(state.player.position); if(d < bd){bd = d; best = state.player;} }
+        for(const b of state.bots){ const d = e.position.distanceTo(b.position); if(d < bd){bd = d; best = b;} }
+        moveTowards(e, best.position, e.userData.speed, dt);
+        if(e.position.distanceTo(best.position) < 1.2){
+          // attack logic
+          if(best.userData && best.userData.isPlayer){
+            best.userData.health -= 1; if(best.userData.health <= 0){ scene.remove(best); state.player = null; log('Player died'); }
+          } else if(best === state.nest){
+            state.nest.userData.health -= 2; log('Nest hit: '+state.nest.userData.health);
+            if(state.nest.userData.health <= 0){ log('Nest destroyed — game over'); state.running = false; }
+          } else {
+            scene.remove(best); const bi = state.bots.indexOf(best); if(bi>=0) state.bots.splice(bi,1);
+            const ai = state.resources.indexOf(best); if(ai>=0) state.resources.splice(ai,1);
+            log('Bot killed');
+          }
+          e.userData.health -= 2;
+          if(e.userData.health <= 0){ scene.remove(e); const ei = state.enemies.indexOf(e); if(ei>=0) state.enemies.splice(ei,1); log('Enemy slain'); }
+        }
+      }
+
+      // nest auto-produce
+      if(state.nest && state.nest.userData.stored >= 10){
+        state.nest.userData.stored -= 10;
+        makeBot(state.nest.position.clone().add(new THREE.Vector3(rnd(-1.5,1.5),0.4,rnd(-1.5,1.5))));
+        log('Nest produced a bot');
+      }
+
+      // wave timer
+      state.timeToWave -= dt;
+      if(state.timeToWave <= 0){
+        spawnWave();
+        state.timeToWave = Math.max(6, 25 - state.level*0.3);
+      }
+    }
+
+    controls.update();
+    renderer.render(scene,camera);
+    updateUI();
+    requestAnimationFrame(step);
+  }
+
+  function spawnWave(){
+    const count = Math.min(200, 3 + Math.floor(state.level*1.0));
+    for(let i=0;i<count;i++){
+      const ang = Math.random()*Math.PI*2; const r = 20 + Math.random()*30 + state.level*0.2;
+      makeEnemy(new THREE.Vector3(Math.cos(ang)*r,0.6,Math.sin(ang)*r));
+    }
+    state.level++; log('Wave spawned. Level now '+state.level);
+  }
+
+  // player controls
+  const keys = {};
+  window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+  window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+  function playerStep(dt){
+    const p = state.player; if(!p) return;
+    const ud = p.userData;
+    const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y=0; fwd.normalize();
+    const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0), fwd).normalize();
+    let mv = new THREE.Vector3();
+    if(keys['w']) mv.add(fwd); if(keys['s']) mv.sub(fwd); if(keys['a']) mv.sub(right); if(keys['d']) mv.add(right);
+    if(mv.length()>0.001){ mv.normalize(); p.position.add(mv.multiplyScalar(ud.speed * Math.min(0.05, (performance.now()/1000)-last))); p.position.y = 0.45; p.lookAt(p.position.clone().add(mv)); }
+    if(keys['e']){ // pick up / deposit
+      if(ud.carry < ud.carryLimit){
+        for(const r of state.resources){
+          if(r.userData.amount > 0 && p.position.distanceTo(r.position) < 1.5){
+            r.userData.amount--; ud.carry++; log('Picked 1 food'); if(r.userData.amount<=0){ scene.remove(r); const ri = state.resources.indexOf(r); if(ri>=0) state.resources.splice(ri,1); } break;
+          }
+        }
+      } else if(state.nest && p.position.distanceTo(state.nest.position) < 2.0){
+        state.nest.userData.stored += ud.carry; state.food += ud.carry; log('Deposited '+ud.carry); ud.carry = 0;
+      }
+      keys['e'] = false; // debounce
+    }
+  }
+
+  // UI
+  function updateUI(){
+    const el = document.getElementById('stats');
+    el.innerHTML = `Level: ${state.level} <br> Ants: ${1 + state.bots.length} <br> Bots: ${state.bots.length} <br> Food: ${state.food} <br> Nest stored: ${state.nest?state.nest.userData.stored:0} <br> Nest HP: ${state.nest?state.nest.userData.health:0} <br> Enemies: ${state.enemies.length} <br> Resources: ${state.resources.length}`;
+  }
+
+  // reset / start
+  function reset(){
+    // remove previous dynamic objects
+    for(const b of state.bots) if(b) scene.remove(b);
+    for(const e of state.enemies) if(e) scene.remove(e);
+    for(const r of state.resources) if(r) scene.remove(r);
+    if(state.nest) scene.remove(state.nest);
+    state.bots.length = 0; state.enemies.length=0; state.resources.length=0;
+    state.food = 50; state.level = 1; state.timeToWave = 25; state.running = true;
+
+    makeNest(); makePlayer();
+    for(let i=0;i<3;i++) makeBot(new THREE.Vector3(rnd(-3,3),0.4,rnd(-3,3)));
+    for(let i=0;i<6;i++) makeResource(new THREE.Vector3(rnd(-8,8),0.6,rnd(-8,8)), Math.floor(rnd(6,16)));
+    log('Game reset');
+  }
+
+  // hooks
+  document.getElementById('btnStart').onclick = reset;
+  document.getElementById('btnWave').onclick = spawnWave;
+  window.addEventListener('resize', ()=>{ camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+
+  // bootstrap
+  reset();
+  requestAnimationFrame(step);
+
+  // expose for debugging
+  window.AC = { state, scene, makeResource, makeEnemy, makeBot };
+  log('Prototype loaded — press Start / Reset.');
+})();
+</script>
+</body>
+</html>
