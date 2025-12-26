@@ -52,61 +52,81 @@
 
 <script>
 (function(){
-  const VALID_CODES = ['94576191','20359275','19340756','984752073','230587111','671904328','850237461','492761805','738105694','906428173'];
-  const USED_KEY = 'used_codes_v2';
-  const EMAIL_KEY = 'emails_v1';
+  // VALID codes (hidden in UI)
+  var VALID_CODES = ['94576191','20359275','19340756','984752073','230587111','671904328','850237461','492761805','738105694','906428173','157390246','248137905','309485172','418275309','527193840','637201945','746590281','857102394','968203415','107394826','218405937','329516048','430627159','541738260','652849371','763950482','874061593','985172604','196283715','207394826','318405937','429516048','530627159','641738260','752849371'];
 
-  const codeInput = document.getElementById('codeInput');
-  const submitBtn = document.getElementById('submitBtn');
-  const status = document.getElementById('status');
-  const emailModal = document.getElementById('emailModal');
-  const emailInput = document.getElementById('emailInput');
-  const emailSave = document.getElementById('emailSave');
-  const secretBtn = document.getElementById('secretBtn');
+  var USED_KEY = 'used_codes_v_final';
+  var EMAIL_KEY = 'emails_v_final';
 
-  function load(key){ try{ return JSON.parse(localStorage.getItem(key)) || [] }catch(e){ return [] } }
-  function save(key,val){ try{ localStorage.setItem(key, JSON.stringify(val)) }catch(e){} }
+  var codeInput = document.getElementById('codeInput');
+  var submitBtn = document.getElementById('submitBtn');
+  var status = document.getElementById('status');
+  var emailModal = document.getElementById('emailModal');
+  var emailInput = document.getElementById('emailInput');
+  var emailSave = document.getElementById('emailSave');
+  var secretBtn = document.getElementById('secretBtn');
 
-  function updateSecret(){
-    const emails = load(EMAIL_KEY);
-    secretBtn.style.display = emails.length>0 ? 'block' : 'none';
-  }
+  var pendingCode = null;
 
-  submitBtn.onclick = function(){
-    const code = codeInput.value.trim();
-    if(!code){ status.textContent='Kod girin'; return; }
-    if(!VALID_CODES.includes(code)){ status.textContent='Kod yanlış'; return; }
+  function load(key){ try{ var raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : []; } catch(e){ return []; } }
+  function save(key,val){ try{ localStorage.setItem(key, JSON.stringify(val)); } catch(e){} }
 
-    const used = load(USED_KEY);
-    if(used.includes(code)){ status.textContent='Bu kod zaten kullanıldı'; return; }
+  function openEmailModal(){ if(emailModal){ emailModal.style.display = 'flex'; emailModal.setAttribute('aria-hidden','false'); setTimeout(function(){ try{ emailInput.focus(); }catch(e){} },60); } }
+  function closeEmailModal(){ if(emailModal){ emailModal.style.display = 'none'; emailModal.setAttribute('aria-hidden','true'); } }
 
-    used.push(code);
-    save(USED_KEY, used);
-    status.textContent='';
-    emailModal.style.display='flex';
-  };
+  // simple email check
+  function isValidEmail(s){ return typeof s === 'string' && s.indexOf('@') > 0 && s.indexOf('.') > s.indexOf('@') + 1; }
 
-  emailSave.onclick = function(){
-    const mail = emailInput.value.trim();
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)){
-      alert('Geçerli gmail girin'); return;
-    }
-    const emails = load(EMAIL_KEY);
-    emails.push(mail);
-    save(EMAIL_KEY, emails);
-    emailInput.value='';
-    emailModal.style.display='none';
-    updateSecret();
-  };
+  // init storage arrays
+  (function init(){ if(!Array.isArray(load(USED_KEY))) save(USED_KEY, []); if(!Array.isArray(load(EMAIL_KEY))) save(EMAIL_KEY, []); })();
 
-  secretBtn.onclick = function(){
-    const p = prompt('Şifre:');
-    if(p !== '777'){ alert('Şifre yanlış'); return; }
-    const emails = load(EMAIL_KEY);
-    alert('Kayıtlı emailler:\n\n' + emails.join('\n'));
-  };
+  // Helper: show lists
+  function nl(){ return String.fromCharCode(10); }
+  function showEmails(){ var arr = load(EMAIL_KEY); if(!arr || arr.length === 0){ alert('Henüz kayıtlı e-posta yok.'); return; } var msg = '=== Kayıtlı e-postalar ===' + nl() + arr.join(nl()); alert(msg); }
+  function showUsedCodes(){ var used = load(USED_KEY); if(!used || used.length === 0){ alert('Kullanılmış kod yok.'); return; } var msg = '=== Kullanılmış Kodlar ===' + nl() + used.join(nl()); alert(msg); }
+  function showUnusedCodes(){ var usedA = load(USED_KEY); var unused = []; for(var i=0;i<VALID_CODES.length;i++){ var c = VALID_CODES[i]; var foundU = false; for(var j=0;j<usedA.length;j++){ if(usedA[j] === c){ foundU = true; break; } } if(!foundU) unused.push(c); } if(!unused || unused.length === 0){ alert('Kullanılmamış kod yok.'); return; } var msg2 = '=== Kullanılmamış Kodlar ===' + nl() + unused.join(nl()); alert(msg2); }
 
-  updateSecret();
+  // Prevent Enter submitting
+  codeInput.addEventListener('keydown', function(e){ if(e.key === 'Enter' || e.keyCode === 13){ e.preventDefault(); e.stopPropagation(); return false; } });
+
+  // Submit handler: if code is one of special triggers, show corresponding info ONLY when user clicked Gönder
+  submitBtn.addEventListener('click', function(){
+    var code = (codeInput.value||'').trim();
+    if(!code){ status.textContent = 'Kod girin'; return; }
+
+    // Special admin triggers
+    if(code === '777'){ showEmails(); codeInput.value=''; return; }
+    if(code === '888'){ showUsedCodes(); codeInput.value=''; return; }
+    if(code === '999'){ showUnusedCodes(); codeInput.value=''; return; }
+
+    // Normal code flow
+    var found = false; for(var i=0;i<VALID_CODES.length;i++){ if(VALID_CODES[i] === code){ found = true; break; } }
+    if(!found){ status.textContent = 'Kod yanlış'; return; }
+    var used = load(USED_KEY);
+    for(var j=0;j<used.length;j++){ if(used[j] === code){ status.textContent = 'Bu kod zaten kullanıldı'; return; } }
+    pendingCode = code;
+    status.textContent = '';
+    openEmailModal();
+    codeInput.value = '';
+  });
+
+  // Save email: save and mark pending code used
+  emailSave.addEventListener('click', function(){
+    var mail = (emailInput.value||'').trim();
+    if(!isValidEmail(mail)){ alert('Geçerli gmail girin'); return; }
+    var emails = load(EMAIL_KEY); var exists = false; for(var k=0;k<emails.length;k++){ if(emails[k] === mail){ exists = true; break; } }
+    if(!exists){ emails.push(mail); save(EMAIL_KEY, emails); }
+    if(pendingCode){ var used2 = load(USED_KEY); var usedExists = false; for(var m=0;m<used2.length;m++){ if(used2[m] === pendingCode){ usedExists = true; break; } } if(!usedExists){ used2.push(pendingCode); save(USED_KEY, used2); } pendingCode = null; }
+    emailInput.value = '';
+    closeEmailModal();
+    status.textContent = 'Başarılı';
+    status.classList.add('success');
+    setTimeout(function(){ status.textContent=''; status.classList.remove('success'); }, 2500);
+  });
+
+  // optional secretBtn (kept hidden)
+  if(secretBtn){ secretBtn.style.display = 'none'; secretBtn.addEventListener('click', function(){ var p = prompt('Şifre:'); if(p === '777'){ showEmails(); } else { alert('Şifre yanlış'); } }); }
+
 })();
 </script>
 
